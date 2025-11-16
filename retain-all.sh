@@ -53,7 +53,7 @@ TAG_PREVIEW_COUNT="${TAG_PREVIEW_COUNT:-50}" # how many tag names to show when P
 GC_ENABLE="${GC_ENABLE:-true}"       # set true to run garbage-collect after pruning
 GC_NAMESPACE="${GC_NAMESPACE:-registry}"    # kubernetes namespace of registry
 GC_LABEL_SELECTOR="${GC_LABEL_SELECTOR:-name=registry,app=registry,app.kubernetes.io/name=registry,app.kubernetes.io/component=registry,component=registry}" # label selector(s) to find registry pod (comma-separated)
-GC_DRY_RUN="${GC_DRY_RUN:-true}"      # run registry garbage-collect in dry-run mode first
+GC_DRY_RUN="${GC_DRY_RUN:-$DRY_RUN}"      # default GC dry-run mirrors DRY_RUN; override to force behavior
 GC_CONFIG_PATH="${GC_CONFIG_PATH:-/etc/docker/registry/config.yml}" # path inside pod
 GC_EXTRA_ARGS="${GC_EXTRA_ARGS:---delete-untagged}" # extra args (e.g. --delete-untagged)
 GC_POD_NAME="${GC_POD_NAME:-}"    # optional explicit pod name override
@@ -555,15 +555,27 @@ run_gc() {
     fi
     echo "[GC] No registry pod found (namespace '$GC_NAMESPACE'). Provide GC_POD_NAME or adjust GC_LABEL_SELECTOR."; return 1
   fi
-  local gc_cmd="registry garbage-collect $GC_CONFIG_PATH $GC_EXTRA_ARGS"
+  # Ensure --delete-untagged is applied by default
+  local gc_extra="${GC_EXTRA_ARGS:-}"
+  if [ -z "$gc_extra" ] || ! printf '%s' "$gc_extra" | grep -q -- "--delete-untagged"; then
+    gc_extra="--delete-untagged ${gc_extra:-}"
+  fi
+  local gc_cmd="registry garbage-collect $GC_CONFIG_PATH $gc_extra"
   if [ "$GC_DRY_RUN" = "true" ]; then
-    gc_cmd="registry garbage-collect --dry-run $GC_CONFIG_PATH $GC_EXTRA_ARGS"
+    gc_cmd="registry garbage-collect --dry-run $GC_CONFIG_PATH $gc_extra"
   fi
   echo "[GC] Executing on pod $pod: $gc_cmd"
   if $KUBECTL -n "$GC_NAMESPACE" exec "$pod" -- $gc_cmd 2>&1 | sed 's/^/[GC] /'; then
     echo "[GC] Completed"
   else
     echo "[GC] WARN: garbage-collect encountered errors"
+  fi
+  # Always show disk usage after GC
+  echo "[GC] Disk usage (df -h) after GC:"
+  if $KUBECTL -n "$GC_NAMESPACE" exec "$pod" -- df -h 2>&1 | sed 's/^/[GC] /'; then
+    :
+  else
+    echo "[GC] WARN: df -h failed"
   fi
 }
 
